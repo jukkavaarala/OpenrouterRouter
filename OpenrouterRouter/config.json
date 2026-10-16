@@ -1,0 +1,16 @@
+{
+  // OpenRouter API key. If empty, the OPENROUTER_API_KEY environment variable is used.
+  "apiKey": "",
+  "port": 11434,
+  "url": "https://openrouter.ai/api/v1",
+  // Optional substring filter on model IDs, e.g. "anthropic". Empty = all tool-capable models.
+  "filter": "",
+  // Print request bodies and SSE chunks to the console.
+  "debug": false,
+  "defaultModel": "openai/gpt-4o",
+  "ollamaVersion": "0.3.0",
+  "requestTimeoutMinutes": 15,
+  "upstreamHeaderTimeoutSeconds": 30,
+  "modelCacheMinutes": 5,
+  "shutdownGraceSeconds": 5
+}

@@ -2,22 +2,28 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 // Proxy that makes OpenRouter look like an Ollama endpoint to GitHub Copilot for Agents.
 //
-// Usage: OpenrouterRouter [--port 11434] [--api-key KEY] [--url https://openrouter.ai/api/v1]
-//                         [--filter substring] [--debug]
-// The API key may also come from the OPENROUTER_API_KEY environment variable.
+// Usage: OpenrouterRouter [--config <path>]   (default: config.json next to the executable)
+// All settings live in the config file; apiKey falls back to OPENROUTER_API_KEY if empty.
 
-var options = Options.Parse(args);
+Options options;
+try { options = Options.Load(args); }
+catch (Exception ex) when (ex is ArgumentException or IOException or JsonException)
+{
+    Log.Write("ERROR", ex.Message, ConsoleColor.Red);
+    return 1;
+}
 if (string.IsNullOrEmpty(options.ApiKey))
 {
-    Log.Write("ERROR", "No OpenRouter API key. Use --api-key or set OPENROUTER_API_KEY", ConsoleColor.Red);
+    Log.Write("ERROR", "No OpenRouter API key. Set \"apiKey\" in the config file or OPENROUTER_API_KEY", ConsoleColor.Red);
     return 1;
 }
 
-using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(15) };
+using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(options.RequestTimeoutMinutes) };
 var proxy = new Proxy(options, http);
 
 var prefix = $"http://localhost:{options.Port}/";
@@ -30,7 +36,7 @@ try
 catch (Exception ex)
 {
     Log.Write("ERROR", $"Cannot bind to {prefix} - {ex.Message}", ConsoleColor.Red);
-    Log.Write("WARN", "Try running as Administrator or change --port", ConsoleColor.Yellow);
+    Log.Write("WARN", "Try running as Administrator or change \"port\" in the config", ConsoleColor.Yellow);
     return 1;
 }
 
@@ -74,36 +80,54 @@ while (listener.IsListening)
     inflight.Add(Task.Run(() => proxy.HandleRequestAsync(ctx)));
 }
 
-try { await Task.WhenAll(inflight).WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
+try { await Task.WhenAll(inflight).WaitAsync(TimeSpan.FromSeconds(options.ShutdownGraceSeconds)); } catch { }
 Log.Write("INFO", "Proxy stopped.");
 return 0;
 
 // ---------------------------------------------------------------------------
 
-sealed record Options(int Port, string ApiKey, string Url, string Filter, bool Debug)
+sealed class Options
 {
-    public static Options Parse(string[] args)
-    {
-        int port = 11434;
-        string key = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY") ?? "";
-        string url = "https://openrouter.ai/api/v1";
-        string filter = "";
-        bool debug = false;
+    public int Port { get; set; } = 11434;
+    public string ApiKey { get; set; } = "";
+    public string Url { get; set; } = "https://openrouter.ai/api/v1";
+    public string Filter { get; set; } = "";
+    public bool Debug { get; set; }
+    public string DefaultModel { get; set; } = "openai/gpt-4o";
+    public string OllamaVersion { get; set; } = "0.3.0";
+    public int RequestTimeoutMinutes { get; set; } = 15;
+    public int UpstreamHeaderTimeoutSeconds { get; set; } = 30;
+    public int ModelCacheMinutes { get; set; } = 5;
+    public int ShutdownGraceSeconds { get; set; } = 5;
 
+    static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+    };
+
+    /// <summary>The only command-line argument is "--config &lt;path&gt;"; everything else lives in the file.</summary>
+    public static Options Load(string[] args)
+    {
+        string? path = null;
         for (int i = 0; i < args.Length; i++)
         {
-            string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"Missing value for {args[i]}");
-            switch (args[i].ToLowerInvariant())
-            {
-                case "--port": port = int.Parse(Next()); break;
-                case "--api-key": key = Next(); break;
-                case "--url": url = Next(); break;
-                case "--filter": filter = Next(); break;
-                case "--debug": debug = true; break;
-                default: throw new ArgumentException($"Unknown argument: {args[i]}");
-            }
+            if (args[i].Equals("--config", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) path = args[++i];
+            else throw new ArgumentException($"Unknown argument: {args[i]}. Usage: OpenrouterRouter [--config <path>]");
         }
-        return new Options(port, key, url.TrimEnd('/'), filter, debug);
+
+        path ??= new[] { Path.Combine(AppContext.BaseDirectory, "config.json"), Path.Combine(Directory.GetCurrentDirectory(), "config.json") }
+            .FirstOrDefault(File.Exists);
+        if (path is null || !File.Exists(path))
+            throw new FileNotFoundException("Configuration file not found. Create config.json next to the executable or pass --config <path>.");
+
+        var o = JsonSerializer.Deserialize<Options>(File.ReadAllText(path), JsonOpts) ?? new Options();
+        if (string.IsNullOrEmpty(o.ApiKey)) o.ApiKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY") ?? "";
+        o.Url = o.Url.TrimEnd('/');
+        Log.Write("INFO", $"Loaded configuration from {path}");
+        return o;
     }
 }
 
@@ -145,7 +169,7 @@ static class Log
 
 sealed partial class Proxy(Options opt, HttpClient http)
 {
-    static readonly TimeSpan HeaderTimeout = TimeSpan.FromSeconds(30);
+    TimeSpan HeaderTimeout => TimeSpan.FromSeconds(opt.UpstreamHeaderTimeoutSeconds);
 
     // Model cache (guarded by _cacheLock)
     readonly SemaphoreSlim _cacheLock = new(1, 1);
@@ -185,7 +209,7 @@ sealed partial class Proxy(Options opt, HttpClient http)
 
             switch (path)
             {
-                case "/api/version": await SendJsonAsync(resp, 200, """{"version":"0.3.0"}"""); break;
+                case "/api/version": await SendJsonAsync(resp, 200, new JsonObject { ["version"] = opt.OllamaVersion }.ToJsonString()); break;
                 case "/api/tags": await RefreshModelsAsync(); await SendJsonAsync(resp, 200, _ollamaTags); break;
                 case "/api/ps": await SendJsonAsync(resp, 200, """{"models":[]}"""); break;
                 case "/api/show": await HandleShowAsync(req, resp); break;
@@ -321,7 +345,7 @@ sealed partial class Proxy(Options opt, HttpClient http)
 
             _ollamaTags = new JsonObject { ["models"] = ollama }.ToJsonString();
             _openAiModels = new JsonObject { ["object"] = "list", ["data"] = openai }.ToJsonString();
-            _expiry = DateTime.Now.AddMinutes(5);
+            _expiry = DateTime.Now.AddMinutes(opt.ModelCacheMinutes);
 
             Log.Write("INFO", $"Cached {ollama.Count} tool-calling models" +
                               (opt.Filter.Length > 0 ? $" (filter: *{opt.Filter}*)" : ""));
@@ -382,7 +406,7 @@ sealed partial class Proxy(Options opt, HttpClient http)
         if (body.Length == 0) { await SendErrAsync(resp, 400, "Empty body"); return; }
         if (opt.Debug) Log.Write("DEBUG", $"REQ >> {body}");
 
-        var model = "openai/gpt-4o";
+        var model = opt.DefaultModel;
         var isStream = false;
         JsonObject? json = null;
         try { json = JsonNode.Parse(body) as JsonObject; } catch (JsonException) { }
@@ -418,8 +442,8 @@ sealed partial class Proxy(Options opt, HttpClient http)
             }
             catch (OperationCanceledException) when (!clientGone.IsCancellationRequested)
             {
-                Log.Write("ERROR", "Upstream timeout after 30 seconds");
-                await SendErrAsync(resp, 504, "Upstream did not respond within 30 seconds");
+                Log.Write("ERROR", $"Upstream timeout after {opt.UpstreamHeaderTimeoutSeconds} seconds");
+                await SendErrAsync(resp, 504, $"Upstream did not respond within {opt.UpstreamHeaderTimeoutSeconds} seconds");
                 return;
             }
 
