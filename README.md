@@ -35,7 +35,10 @@ Visual Studio / Copilot  --(Ollama API)-->  OpenrouterRouter  --(OpenAI API)--> 
 
 ## Build and run
 
+The repo ships `OpenrouterRouter/config.json.sample`. Copy it to `config.json` in the same folder and edit it before running (see [Configuration](#configuration)).
+
 ```powershell
+Copy-Item OpenrouterRouter\config.json.sample OpenrouterRouter\config.json
 dotnet run --project OpenrouterRouter
 ```
 
@@ -47,9 +50,24 @@ dotnet run --project OpenrouterRouter -- --config C:\path\to\config.json
 
 If `--config` is omitted, `config.json` is looked up next to the executable, then in the current directory. `--config <path>` is the only command-line argument.
 
+## Publish a single exe
+
+```powershell
+dotnet publish OpenrouterRouter -c Release -o publish
+```
+
+This produces `publish\OpenrouterRouter.exe`, a single self-contained `win-x64` executable (about 36 MB) that includes the .NET runtime, so the target machine needs nothing installed. `config.json.sample` is copied next to it. Rename it to `config.json` and edit it, or pass `--config <path>`:
+
+```powershell
+Copy-Item publish\config.json.sample publish\config.json
+.\publish\OpenrouterRouter.exe
+```
+
+The publish settings live in `OpenrouterRouter.csproj`. Trimming is deliberately off because it can break the reflection-based config loading. To target another platform, change `RuntimeIdentifier` there (the event log feature is Windows-only).
+
 ## Configuration
 
-All settings live in `config.json`, which is copied to the output directory on build. Comments and trailing commas are allowed, and unknown keys are rejected.
+All settings live in `config.json` (created from `config.json.sample`; the sample is copied to the output directory on build and publish). Comments and trailing commas are allowed, and unknown keys are rejected.
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -64,7 +82,7 @@ All settings live in `config.json`, which is copied to the output directory on b
 | `upstreamHeaderTimeoutSeconds` | `30` | How long to wait for OpenRouter to start responding. Returns 504 on expiry. |
 | `modelCacheMinutes` | `5` | How long the model list is cached. |
 | `shutdownGraceSeconds` | `5` | How long in-flight requests get to finish on Ctrl+C. |
-| `eventLog` | `false` (the shipped `config.json` sets `true`) | Mirror INFO, WARN and ERROR log lines to the Windows Application event log. |
+| `eventLog` | `false` (`config.json.sample` sets `true`) | Mirror DEBUG, INFO, WARN and ERROR log lines to the Windows Application event log. |
 
 > **Keep your API key out of source control.** Prefer the `OPENROUTER_API_KEY` environment variable over writing the key into `config.json`.
 
@@ -76,7 +94,7 @@ All settings live in `config.json`, which is copied to the output directory on b
 
 ## Windows event log
 
-With `"eventLog": true`, INFO, WARN and ERROR messages are also written to the Application log under the source `OpenrouterRouter`. DEBUG output stays on the console. Registering the event source requires administrator rights once, so run the proxy elevated the first time. If registration fails, the proxy logs a warning and carries on without the event log.
+With `"eventLog": true`, DEBUG, INFO, WARN and ERROR messages are also written to the Application log under the source `OpenrouterRouter`. DEBUG entries are recorded as informational events and prefixed with `[DEBUG]`. Registering the event source requires administrator rights once, so run the proxy elevated the first time. If registration fails, the proxy logs a warning and carries on without the event log.
 
 ## Troubleshooting
 

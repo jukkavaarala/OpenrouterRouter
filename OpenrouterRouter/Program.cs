@@ -142,7 +142,7 @@ static class Log
     static readonly object Gate = new();
     static bool _eventLog;
 
-    /// <summary>Mirrors INFO/WARN/ERROR to the Windows Application event log. Registering the source needs elevation once.</summary>
+    /// <summary>Mirrors DEBUG/INFO/WARN/ERROR to the Windows Application event log. Registering the source needs elevation once.</summary>
     public static void EnableEventLog()
     {
         if (!OperatingSystem.IsWindows())
@@ -171,7 +171,11 @@ static class Log
             case "ERROR": type = System.Diagnostics.EventLogEntryType.Error; break;
             case "WARN": type = System.Diagnostics.EventLogEntryType.Warning; break;
             case "INFO": type = System.Diagnostics.EventLogEntryType.Information; break;
-            default: return; // DEBUG stays console-only
+            case "DEBUG":
+                type = System.Diagnostics.EventLogEntryType.Information;
+                msg = $"[DEBUG] {msg}";
+                break;
+            default: return;
         }
         try
         {
