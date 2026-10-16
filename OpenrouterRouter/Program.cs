@@ -23,6 +23,8 @@ if (string.IsNullOrEmpty(options.ApiKey))
     return 1;
 }
 
+if (options.EventLog) Log.EnableEventLog();
+
 using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(options.RequestTimeoutMinutes) };
 var proxy = new Proxy(options, http);
 
@@ -99,6 +101,7 @@ sealed class Options
     public int UpstreamHeaderTimeoutSeconds { get; set; } = 30;
     public int ModelCacheMinutes { get; set; } = 5;
     public int ShutdownGraceSeconds { get; set; } = 5;
+    public bool EventLog { get; set; }
 
     static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -133,10 +136,54 @@ sealed class Options
 
 static class Log
 {
+    const string EventSource = "OpenrouterRouter";
+    const int MaxEventChars = 30000; // event log limit is ~31839 characters per entry
+
     static readonly object Gate = new();
+    static bool _eventLog;
+
+    /// <summary>Mirrors INFO/WARN/ERROR to the Windows Application event log. Registering the source needs elevation once.</summary>
+    public static void EnableEventLog()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Write("WARN", "eventLog is only supported on Windows; ignoring");
+            return;
+        }
+        try
+        {
+            if (!System.Diagnostics.EventLog.SourceExists(EventSource))
+                System.Diagnostics.EventLog.CreateEventSource(EventSource, "Application");
+            _eventLog = true;
+        }
+        catch (Exception ex)
+        {
+            Write("WARN", $"Windows event log disabled - cannot register source \"{EventSource}\" (run once as Administrator): {ex.Message}");
+        }
+    }
+
+    static void WriteEventLog(string level, string msg)
+    {
+        if (!_eventLog || !OperatingSystem.IsWindows()) return;
+        System.Diagnostics.EventLogEntryType type;
+        switch (level)
+        {
+            case "ERROR": type = System.Diagnostics.EventLogEntryType.Error; break;
+            case "WARN": type = System.Diagnostics.EventLogEntryType.Warning; break;
+            case "INFO": type = System.Diagnostics.EventLogEntryType.Information; break;
+            default: return; // DEBUG stays console-only
+        }
+        try
+        {
+            if (msg.Length > MaxEventChars) msg = msg[..MaxEventChars] + "...(truncated)";
+            System.Diagnostics.EventLog.WriteEntry(EventSource, msg, type);
+        }
+        catch { /* never let logging break the proxy */ }
+    }
 
     public static void Write(string level, string msg, ConsoleColor? color = null)
     {
+        WriteEventLog(level, msg);
         var c = color ?? level switch
         {
             "INFO" => ConsoleColor.Cyan,

@@ -12,5 +12,8 @@
   "requestTimeoutMinutes": 15,
   "upstreamHeaderTimeoutSeconds": 30,
   "modelCacheMinutes": 5,
-  "shutdownGraceSeconds": 5
+  "shutdownGraceSeconds": 5,
+  // Mirror INFO/WARN/ERROR output to the Windows Application event log (source "OpenrouterRouter").
+  // DEBUG stays console-only. Needs an elevated process the first time so the event source can be registered.
+  "eventLog": true
 }
